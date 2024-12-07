@@ -1,12 +1,11 @@
 import librosa
 import numpy as np
-import sounddevice as sd
 import os
+import subprocess
 from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 from sklearn.svm import SVC
 from sklearn.metrics import classification_report
-from scipy.io.wavfile import write
 
 # Load audio file
 def load_audio(file_path):
@@ -16,7 +15,6 @@ def load_audio(file_path):
 # Extract MFCC features
 def extract_features(y, sr):
     mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
-    # Optionally include delta MFCCs or other features
     return np.mean(mfcc, axis=1)  # Averaging across time frames
 
 # Create a dataset from a folder of audio files
@@ -36,7 +34,7 @@ def create_dataset(audio_folder):
     return np.array(features), np.array(labels)
 
 # Load your dataset
-audio_folder = "/Users/sobithav/Documents/dataset"  # Provide path to your dataset folder
+audio_folder = "/Users/sobithav/Documents/dataset"  # Make sure to provide path to your dataset folder
 X, y = create_dataset(audio_folder)
 
 # Normalize features
@@ -54,35 +52,25 @@ model.fit(X_train, y_train)
 y_pred = model.predict(X_test)
 print(classification_report(y_test, y_pred))
 
-# Predict on recorded audio
-def predict_scream_audio(audio_data, sr):
+# Example of using the trained model for prediction on a new audio file
+def predict_scream(file_path):
+    y, sr = load_audio(file_path)
+    mfcc_features = extract_features(y, sr)
+    mfcc_scaled = scaler.transform([mfcc_features])
+    prediction = model.predict(mfcc_scaled)
+    return prediction[0]
+
+# Predict on a new file and run script if prediction is "screaming"
+file_path = "/Users/sobithav/Downloads/3.wav"  # Replace with path to your test audio file
+prediction = predict_scream(file_path)
+print(f"Prediction for '{file_path}': {prediction}")
+
+if prediction.lower() == "screaming":
+    # Path to your SQLite script
+    sqlite_script_path = "/Users/sobithav/Library/Application Support/JetBrains/PyCharm2024.3/scratches/sqlite_script.py"  # Replace with the actual path to your script
     try:
-        mfcc_features = extract_features(audio_data, sr)
-        mfcc_scaled = scaler.transform([mfcc_features])
-        prediction = model.predict(mfcc_scaled)
-        return "Screaming" if prediction[0] == 'screaming' else "Not Screaming"
-    except Exception as e:
-        return f"Error processing audio: {e}"
-
-# Record live audio and predict
-def record_and_predict():
-    print("Recording... Speak now!")
-    duration = 5  # Record for 5 seconds
-    sr = 22050  # Sample rate
-    audio_data = sd.rec(int(duration * sr), samplerate=sr, channels=1, dtype='float32')
-    sd.wait()  # Wait until recording is finished
-    print("Recording complete. Analyzing...")
-    audio_data = audio_data.flatten()  # Flatten the array (from stereo to mono)
-    prediction = predict_scream_audio(audio_data, sr)
-    print(f"Prediction: {prediction}")
-
-# Main interactive loop
-while True:
-    choice = input("Type 'record' to record your voice or 'exit' to quit: ").strip().lower()
-    if choice == 'record':
-        record_and_predict()
-    elif choice == 'exit':
-        print("Exiting the program.")
-        break
-    else:
-        print("Invalid input. Please type 'record' or 'exit'.")
+        print("Screaming detected. Running SQLite script...")
+        subprocess.run(["python", sqlite_script_path], check=True)
+        print(f"SQLite script executed successfully for prediction '{prediction}'.")
+    except subprocess.CalledProcessError as e:
+        print(f"Error executing SQLite script: {e}")

@@ -1,76 +1,117 @@
+import os
 import librosa
 import numpy as np
-import os
-import subprocess
-from sklearn.preprocessing import StandardScaler
+import tensorflow as tf
+from tensorflow.keras import layers, models
+from tensorflow.keras.utils import to_categorical
 from sklearn.model_selection import train_test_split
-from sklearn.svm import SVC
-from sklearn.metrics import classification_report
+import matplotlib.pyplot as plt
 
-# Load audio file
-def load_audio(file_path):
-    y, sr = librosa.load(file_path, sr=None)  # y: audio time series, sr: sampling rate
-    return y, sr
+# Directory and class information
+data_dir = '/Users/sobithav/Downloads/train_data'
+classes = ['Screaming', 'NotScreaming']
 
-# Extract MFCC features
-def extract_features(y, sr):
-    mfcc = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13)
-    return np.mean(mfcc, axis=1)  # Averaging across time frames
+# Check if data directory exists
+if os.path.exists(data_dir):
+    print(f"Directory exists: {data_dir}")
+    print("Contents of directory:", os.listdir(data_dir))
+else:
+    raise FileNotFoundError(f"Directory not found: {data_dir}")
 
-# Create a dataset from a folder of audio files
-def create_dataset(audio_folder):
-    features = []
-    labels = []
-    for label in os.listdir(audio_folder):
-        folder_path = os.path.join(audio_folder, label)
-        if os.path.isdir(folder_path):
-            for file in os.listdir(folder_path):
-                if file.endswith(".wav"):
-                    file_path = os.path.join(folder_path, file)
-                    y, sr = load_audio(file_path)
-                    mfcc_features = extract_features(y, sr)
-                    features.append(mfcc_features)
-                    labels.append(label)
-    return np.array(features), np.array(labels)
+# Load and preprocess data
+def load_and_preprocess_data(data_dir, classes, target_shape=(128, 128)):
+    data, labels = [], []
+    for i, class_name in enumerate(classes):
+        class_dir = os.path.join(data_dir, class_name)
+        for filename in os.listdir(class_dir):
+            if filename.endswith('.wav'):
+                file_path = os.path.join(class_dir, filename)
+                audio_data, sample_rate = librosa.load(file_path, sr=None)
+                mel_spectrogram = librosa.feature.melspectrogram(y=audio_data, sr=sample_rate)
+                mel_spectrogram = tf.image.resize(np.expand_dims(mel_spectrogram, axis=-1), target_shape)
+                data.append(mel_spectrogram.numpy())
+                labels.append(i)
+    return np.array(data), np.array(labels)
 
-# Load your dataset
-audio_folder = "/Users/sobithav/Documents/dataset"  # Make sure to provide path to your dataset folder
-X, y = create_dataset(audio_folder)
+# Data loading and preprocessing
+data, labels = load_and_preprocess_data(data_dir, classes)
+labels = to_categorical(labels, num_classes=len(classes))  # One-hot encoding
+X_train, X_test, y_train, y_test = train_test_split(data, labels, test_size=0.1, random_state=42)
 
-# Normalize features
-scaler = StandardScaler()
-X_scaled = scaler.fit_transform(X)
+# Visualize a Mel spectrogram
+plt.figure(figsize=(10, 4))
+plt.imshow(data[0].squeeze(), aspect='auto', cmap='viridis')
+plt.colorbar(format='%+2.0f dB')
+plt.title(f'Mel Spectrogram (Class: {classes[np.argmax(labels[0])]})')
+plt.xlabel('Time')
+plt.ylabel('Mel Frequency')
+plt.tight_layout()
+plt.show()
 
-# Split the data into training and testing sets
-X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.3, random_state=42)
+# Define the model architecture
+input_shape = X_train[0].shape
+num_labels = len(classes)
 
-# Train a classifier (SVM in this case)
-model = SVC(kernel='linear')
-model.fit(X_train, y_train)
+# Normalization layer
+norm_layer = layers.Normalization()
+norm_layer.adapt(X_train)
+
+# Model definition
+model = models.Sequential([
+    layers.Input(shape=input_shape),
+    layers.Resizing(32, 32),  # Downsample
+    norm_layer,  # Normalize input
+    layers.Conv2D(32, 3, activation='relu'),
+    layers.Conv2D(64, 3, activation='relu'),
+    layers.MaxPooling2D(),
+    layers.Dropout(0.25),  # Regularization
+    layers.Flatten(),
+    layers.Dense(128, activation='relu'),
+    layers.Dropout(0.5),  # Regularization
+    layers.Dense(num_labels, activation='softmax'),  # Classification layer
+])
+
+# Compile the model
+model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+
+# Train the model
+history = model.fit(X_train, y_train, epochs=50, batch_size=32, validation_data=(X_test, y_test))
 
 # Evaluate the model
-y_pred = model.predict(X_test)
-print(classification_report(y_test, y_pred))
+test_accuracy = model.evaluate(X_test, y_test, verbose=0)
+print(f"Test Accuracy: {test_accuracy[1]:.4f}")
 
-# Example of using the trained model for prediction on a new audio file
-def predict_scream(file_path):
-    y, sr = load_audio(file_path)
-    mfcc_features = extract_features(y, sr)
-    mfcc_scaled = scaler.transform([mfcc_features])
-    prediction = model.predict(mfcc_scaled)
-    return prediction[0]
+# Save the model
+model.save('audio_classification_model.keras')
 
-# Predict on a new file and run script if prediction is "screaming"
-file_path = "/Users/sobithav/Downloads/3.wav"  # Replace with path to your test audio file
-prediction = predict_scream(file_path)
-print(f"Prediction for '{file_path}': {prediction}")
+# Load the saved model
+model = tf.keras.models.load_model('audio_classification_model.keras')
 
-if prediction.lower() == "screaming":
-    # Path to your SQLite script
-    sqlite_script_path = "/Users/sobithav/Library/Application Support/JetBrains/PyCharm2024.3/scratches/sqlite_script.py"  # Replace with the actual path to your script
-    try:
-        print("Screaming detected. Running SQLite script...")
-        subprocess.run(["python", sqlite_script_path], check=True)
-        print(f"SQLite script executed successfully for prediction '{prediction}'.")
-    except subprocess.CalledProcessError as e:
-        print(f"Error executing SQLite script: {e}")
+# Function to test a single audio file
+def test_audio(file_path, model, target_shape=(32, 32)):
+    audio_data, sample_rate = librosa.load(file_path, sr=None)
+    mel_spectrogram = librosa.feature.melspectrogram(y=audio_data, sr=sample_rate)
+    mel_spectrogram = tf.image.resize(np.expand_dims(mel_spectrogram, axis=-1), target_shape)
+    mel_spectrogram = tf.reshape(mel_spectrogram, (1,) + target_shape + (1,))
+    predictions = model.predict(mel_spectrogram)
+    class_probabilities = predictions[0]
+    
+    # Threshold for prioritizing "Screaming"
+    screaming_threshold = 0.8
+    if class_probabilities[0] > screaming_threshold:
+        return class_probabilities, 0
+    
+    # Return the class with the highest probability
+    predicted_class_index = np.argmax(class_probabilities)
+    return class_probabilities, predicted_class_index
+
+# Test the model with an audio file
+test_audio_file = '/Users/sobithav/Downloads/10.wav'
+class_probabilities, predicted_class_index = test_audio(test_audio_file, model)
+
+# Display results
+for i, class_label in enumerate(classes):
+    print(f"Class: {class_label}, Probability: {class_probabilities[i]:.4f}")
+predicted_class = classes[predicted_class_index]
+print(f'The audio is classified as: {predicted_class}')
+print(f'Confidence: {class_probabilities[predicted_class_index]:.4f}')
